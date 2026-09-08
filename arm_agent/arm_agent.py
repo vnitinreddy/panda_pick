@@ -1,5 +1,5 @@
 # ============================================================
-# Simplified OpenVLA + LIBERO Inference
+# OpenVLA + LIBERO Inference
 # ============================================================
 
 import argparse
