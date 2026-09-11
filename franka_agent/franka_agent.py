@@ -1,50 +1,111 @@
-
 #@title Inference
+
 # ============================================================
-# OpenVLA + Robosuite Panda Inference
+# franka_agent.py
+#
+# OpenVLA + Robosuite Franka Panda
 #
 # Pipeline:
 #
-#   Robosuite camera
-#        ↓
-#   image preprocessing
-#        ↓
-#   OpenVLA 7B (base model)
-#        ↓
-#   bridge_orig 7-D action
-#        ↓
-#   Robosuite OSC_POSE controller
-#        ↓
-#   Panda
+#   Robosuite Panda
+#        |
+#        v
+#   agentview_image
+#        |
+#        v
+#   OpenVLA
+#        |
+#        v
+#   7-D BridgeData action
+#        |
+#        v
+#   convert_vla_action_to_robosuite()
+#        |
+#        v
+#   Robosuite OSC_POSE
+#        |
+#        v
+#   Franka Panda
 #
-# Action:
-#   [dx, dy, dz, dRx, dRy, dRz, gripper]
+# IMPORTANT:
 #
-# The robot controller / IK is handled by Robosuite.
+# The OpenVLA -> Robosuite action conversion intentionally
+# follows the existing franka_agent.py implementation:
+#
+#   OpenVLA:
+#       [dx, dy, dz, dRx, dRy, dRz, gripper]
+#
+#   First six:
+#       copied unchanged
+#
+#   Gripper:
+#       OpenVLA 0 = open
+#       OpenVLA 1 = closed
+#
+#       Robosuite -1 = open
+#       Robosuite +1 = closed
+#
+#       robosuite_gripper = 2 * openvla_gripper - 1
+#
+# NO additional position / rotation scaling is performed here.
 # ============================================================
 
 
 # ============================================================
-# 1. IMPORTS
+# 1. ENVIRONMENT
 # ============================================================
 
 import os
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+# ============================================================
+# 2. IMPORTS
+# ============================================================
+
+import sys
 import time
-import math
-import imageio
+import argparse
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
+
+import imageio.v2 as imageio
 
 import robosuite as suite
 from robosuite.controllers import load_controller_config
 
+from transformers import (
+    AutoProcessor,
+    AutoModelForVision2Seq,
+)
+
 
 # ============================================================
-# 2. CONFIGURATION
+# 3. PATHS
+# ============================================================
+
+# Keep the same paths used by the working Colab environment.
+
+PANDA_PICK_PATH = "/content/panda_pick"
+OPENVLA_PATH = "/content/openvla"
+
+for path in [
+    PANDA_PICK_PATH,
+    OPENVLA_PATH,
+]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+# ============================================================
+# 4. CONFIGURATION
 # ============================================================
 
 class Config:
@@ -53,123 +114,110 @@ class Config:
     # OpenVLA
     # --------------------------------------------------------
 
-    model_name = "openvla/openvla-7b"
+    MODEL_NAME = "openvla/openvla-7b"
 
-    # IMPORTANT:
-    # This is the action normalization key used by the
-    # general/base OpenVLA model for BridgeData.
-    normalization_key = "bridge_orig"
+    NORMALIZATION_KEY = "bridge_orig"
 
-    gpu = "cuda:0"
+    DEVICE = "cuda:0"
 
     # --------------------------------------------------------
     # Task
     # --------------------------------------------------------
 
-    instruction = "pick up the red cube"
+    INSTRUCTION = "pick up the red cube"
+
+    # This is the prompt used by the old working code.
+    PROMPT_TEMPLATE = (
+        "In: What action should the robot take to "
+        "{instruction}?\nOut:"
+    )
+
+    # --------------------------------------------------------
+    # Robosuite
+    # --------------------------------------------------------
+
+    ENV_NAME = "Lift"
+
+    ROBOT = "Panda"
+
+    CONTROLLER = "OSC_POSE"
+
+    CONTROL_FREQ = 20
+
+    MAX_STEPS = 300
+
+    WARMUP_STEPS = 20
+
+    ACTION_REPEAT = 1
 
     # --------------------------------------------------------
     # Camera
     # --------------------------------------------------------
 
-    camera_name = "agentview"
+    CAMERA_NAME = "agentview"
 
-    camera_height = 224
-    camera_width = 224
+    CAMERA_WIDTH = 224
 
-    # --------------------------------------------------------
-    # Simulation
-    # --------------------------------------------------------
-
-    control_freq = 20
-
-    maximum_steps = 300
-
-    # Let the simulation settle before asking OpenVLA
-    # for the first action.
-    warmup_steps = 20
+    CAMERA_HEIGHT = 224
 
     # --------------------------------------------------------
     # Output
     # --------------------------------------------------------
 
-    output_folder = "/content/panda_pick/franka_agent/outputs/videos"
+    OUTPUT_FOLDER = (
+        "/content/panda_pick/"
+        "franka_agent/outputs/videos"
+    )
 
-    episode_number = 0
-
-    # --------------------------------------------------------
-    # Action safety
-    # --------------------------------------------------------
-
-    # Number of repeated controller steps per VLA action.
-    #
-    # Start with 1.
-    #
-    # If movement is too slow, this can be increased later.
-    action_repeat = 1
+    EPISODE = 1
 
     # --------------------------------------------------------
     # Debug
     # --------------------------------------------------------
 
-    print_actions = True
-    print_robot_state = True
+    PRINT_ACTIONS = True
+
+    PRINT_STATE = True
+
+    PRINT_CAMERA_INFO = True
 
 
 # ============================================================
-# 3. RUNTIME ENVIRONMENT
+# 5. OPENVLA WRAPPER
 # ============================================================
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-# We are running this script with:
-#
-# /content/openvla_env/bin/python
-#
-# so the following paths are useful when running the script
-# directly from PickAgent.
-#
-# They are harmless if the paths already exist in sys.path.
-
-import sys
-
-PROJECT_PATHS = [
-    "/content/PickAgent",
-    "/content/openvla",
-]
-
-for path in PROJECT_PATHS:
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-
-# ============================================================
-# 4. OPENVLA
-# ============================================================
-
-class OpenVLA:
-    """
-    Small wrapper around the general OpenVLA model.
-    """
+class OpenVLAWrapper:
 
     def __init__(
         self,
         model_name,
-        gpu="cuda:0",
-        normalization_key="bridge_orig",
+        device,
+        normalization_key,
     ):
 
-        self.gpu = gpu
+        self.model_name = model_name
+        self.device = device
         self.normalization_key = normalization_key
 
         print()
         print("=" * 70)
-        print("Loading OpenVLA")
+        print("OPENVLA")
         print("=" * 70)
 
-        print("Model:", model_name)
-        print("GPU:", gpu)
-        print("Normalization:", normalization_key)
+        print(
+            "Model:",
+            model_name,
+        )
+
+        print(
+            "Device:",
+            device,
+        )
+
+        print(
+            "Normalization key:",
+            normalization_key,
+        )
 
         # ----------------------------------------------------
         # Processor
@@ -178,9 +226,11 @@ class OpenVLA:
         print()
         print("Loading processor...")
 
-        self.processor = AutoProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=True,
+        self.processor = (
+            AutoProcessor.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+            )
         )
 
         # ----------------------------------------------------
@@ -189,37 +239,47 @@ class OpenVLA:
 
         print("Loading model...")
 
-        self.model = AutoModelForVision2Seq.from_pretrained(
-            model_name,
-
-            # Use Flash Attention when available.
-            attn_implementation="flash_attention_2",
-
-            torch_dtype=torch.bfloat16,
-
-            low_cpu_mem_usage=True,
-
-            trust_remote_code=True,
-        ).to(gpu)
+        self.model = (
+            AutoModelForVision2Seq.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+                attn_implementation="flash_attention_2",
+            )
+            .to(device)
+        )
 
         self.model.eval()
 
         print()
-        print("OpenVLA loaded successfully.")
+        print("OpenVLA loaded.")
 
-        print(
-            "Model dtype:",
-            next(self.model.parameters()).dtype,
-        )
+        try:
 
-        print(
-            "Model device:",
-            next(self.model.parameters()).device,
-        )
+            print(
+                "Model device:",
+                next(
+                    self.model.parameters()
+                ).device,
+            )
+
+            print(
+                "Model dtype:",
+                next(
+                    self.model.parameters()
+                ).dtype,
+            )
+
+        except Exception:
+            pass
 
         print("=" * 70)
-        print()
 
+
+    # ========================================================
+    # Predict
+    # ========================================================
 
     @torch.inference_mode()
     def predict(
@@ -227,36 +287,40 @@ class OpenVLA:
         image,
         instruction,
     ):
-        """
-        Predict one OpenVLA action.
-
-        Returns:
-            np.ndarray with shape (7,)
-        """
 
         # ----------------------------------------------------
         # Convert image to PIL
         # ----------------------------------------------------
 
-        if isinstance(image, np.ndarray):
+        if isinstance(
+            image,
+            np.ndarray,
+        ):
 
             image = Image.fromarray(
                 image
             ).convert("RGB")
 
-        elif not isinstance(image, Image.Image):
+        elif isinstance(
+            image,
+            Image.Image,
+        ):
+
+            image = image.convert("RGB")
+
+        else:
 
             raise TypeError(
-                f"Unsupported image type: {type(image)}"
+                "Unsupported image type: "
+                f"{type(image)}"
             )
 
         # ----------------------------------------------------
-        # OpenVLA prompt
+        # Prompt
         # ----------------------------------------------------
 
-        prompt = (
-            "In: What action should the robot take to "
-            f"{instruction.lower()}?\nOut:"
+        prompt = Config.PROMPT_TEMPLATE.format(
+            instruction=instruction.lower()
         )
 
         # ----------------------------------------------------
@@ -268,97 +332,111 @@ class OpenVLA:
             image,
         )
 
-        # Move tensors to GPU.
-        #
-        # We do NOT blindly convert every object to bfloat16.
-        # Integer tensors such as input_ids must remain integer.
-        #
-        inputs = {
-            key: value.to(self.gpu)
-            if hasattr(value, "to")
-            else value
-            for key, value in inputs.items()
-        }
+        # ----------------------------------------------------
+        # Move tensors to GPU
+        # ----------------------------------------------------
+
+        for key in inputs:
+
+            if hasattr(
+                inputs[key],
+                "to",
+            ):
+
+                inputs[key] = (
+                    inputs[key]
+                    .to(self.device)
+                )
 
         # ----------------------------------------------------
-        # Predict
+        # OpenVLA prediction
         # ----------------------------------------------------
 
         action = self.model.predict_action(
             **inputs,
-
             unnorm_key=self.normalization_key,
-
             do_sample=False,
         )
 
         # ----------------------------------------------------
-        # Normalize output type
+        # Convert output to numpy
         # ----------------------------------------------------
 
-        if isinstance(action, torch.Tensor):
+        if isinstance(
+            action,
+            torch.Tensor,
+        ):
 
-            action = action.detach().float().cpu().numpy()
+            action = (
+                action
+                .detach()
+                .float()
+                .cpu()
+                .numpy()
+            )
 
         else:
 
-            action = np.asarray(action)
+            action = np.asarray(
+                action,
+                dtype=np.float32,
+            )
 
         action = np.asarray(
             action,
             dtype=np.float32,
         ).reshape(-1)
 
+        # ----------------------------------------------------
+        # Validate action
+        # ----------------------------------------------------
+
         if action.shape[0] != 7:
 
             raise RuntimeError(
-                "OpenVLA returned an unexpected action shape: "
-                f"{action.shape}. Expected 7 values."
+                "OpenVLA returned "
+                f"{action.shape[0]} action values. "
+                "Expected exactly 7."
             )
 
         return action
 
 
 # ============================================================
-# 5. ROBOSUITE ENVIRONMENT
+# 6. ROBOSUITE ENVIRONMENT
 # ============================================================
 
 def create_environment():
-    """
-    Create a Robosuite Panda environment.
-
-    OSC_POSE receives a normalized 7-D action:
-
-        [dx, dy, dz, dRx, dRy, dRz, gripper]
-
-    Robosuite performs the robot-level control internally.
-    """
 
     print()
     print("=" * 70)
-    print("Creating Robosuite environment")
+    print("ROBOSUITE")
     print("=" * 70)
 
     # --------------------------------------------------------
-    # Controller
+    # Controller configuration
     # --------------------------------------------------------
 
-    controller_config = load_controller_config(
-        default_controller="OSC_POSE"
+    controller_config = (
+        load_controller_config(
+            default_controller=Config.CONTROLLER
+        )
     )
 
     print()
-    print("Controller:")
-    print("  OSC_POSE")
+    print(
+        "Controller:",
+        Config.CONTROLLER,
+    )
 
     # --------------------------------------------------------
-    # Environment
+    # Create environment
     # --------------------------------------------------------
 
     env = suite.make(
-        "Lift",
+        Config.ENV_NAME,
 
-        robots="Panda",
+        robots=Config.ROBOT,
 
         controller_configs=controller_config,
 
@@ -370,7 +448,7 @@ def create_environment():
 
         has_offscreen_renderer=True,
 
-        render_camera=Config.camera_name,
+        render_camera=Config.CAMERA_NAME,
 
         # ----------------------------------------------------
         # Camera observations
@@ -378,69 +456,139 @@ def create_environment():
 
         use_camera_obs=True,
 
-        camera_names=Config.camera_name,
+        camera_names=Config.CAMERA_NAME,
 
-        camera_heights=Config.camera_height,
+        camera_heights=Config.CAMERA_HEIGHT,
 
-        camera_widths=Config.camera_width,
+        camera_widths=Config.CAMERA_WIDTH,
 
         # ----------------------------------------------------
         # Simulation
         # ----------------------------------------------------
 
-        control_freq=Config.control_freq,
+        control_freq=Config.CONTROL_FREQ,
 
-        horizon=Config.maximum_steps,
+        horizon=Config.MAX_STEPS,
 
-        # Reward is useful for diagnostics.
         reward_shaping=True,
-
-        # ----------------------------------------------------
-        # Determinism
-        # ----------------------------------------------------
 
         ignore_done=False,
     )
 
     print()
-    print("Robosuite environment created successfully.")
+    print("Robosuite environment created.")
+
+    # --------------------------------------------------------
+    # Action information
+    # --------------------------------------------------------
+
+    try:
+
+        print()
+        print("Robot action information:")
+        print("-" * 70)
+
+        env.robots[0].print_action_info()
+
+    except Exception as exc:
+
+        print(
+            "Could not print action information:",
+            repr(exc),
+        )
+
+    # --------------------------------------------------------
+    # Camera information
+    # --------------------------------------------------------
+
+    if Config.PRINT_CAMERA_INFO:
+
+        try:
+
+            model = env.sim.model
+
+            print()
+            print("MuJoCo cameras:")
+            print("-" * 70)
+
+            for cam_id in range(
+                model.ncam
+            ):
+
+                camera_name = (
+                    model.camera_id2name(
+                        cam_id
+                    )
+                )
+
+                print(
+                    f"camera {cam_id}: "
+                    f"{camera_name}"
+                )
+
+                print(
+                    "  position:",
+                    model.cam_pos[
+                        cam_id
+                    ],
+                )
+
+                print(
+                    "  quaternion:",
+                    model.cam_quat[
+                        cam_id
+                    ],
+                )
+
+        except Exception as exc:
+
+            print(
+                "Could not inspect cameras:",
+                repr(exc),
+            )
 
     print("=" * 70)
-    print()
 
     return env
 
 
 # ============================================================
-# 6. IMAGE PROCESSING
+# 7. CAMERA IMAGE
 # ============================================================
 
-def prepare_image(observation):
+def prepare_image(
+    observation,
+):
     """
-    Convert Robosuite's camera observation into the image
-    expected by OpenVLA.
+    Extract the camera image from the Robosuite observation.
+
+    The expected observation key is:
+
+        agentview_image
 
     IMPORTANT:
 
-    Robosuite camera observations are vertically flipped
-    relative to the normal image convention.
+    We do NOT vertically flip the image here.
 
-    Therefore we flip Y only:
-
-        image[::-1]
-
-    We do NOT rotate 180 degrees like the LIBERO code.
+    The previous working MuJoCo implementation passed the
+    rendered camera image directly to OpenVLA.
     """
 
-    camera_key = f"{Config.camera_name}_image"
+    camera_key = (
+        f"{Config.CAMERA_NAME}_image"
+    )
 
     if camera_key not in observation:
+
         raise RuntimeError(
-            f"Camera image '{camera_key}' not found in "
-            f"observation keys: {list(observation.keys())}"
+            f"Camera image '{camera_key}' "
+            "not found in observation keys: "
+            f"{list(observation.keys())}"
         )
 
-    image = observation[camera_key]	
+    image = observation[
+        camera_key
+    ]
 
     image = np.asarray(
         image,
@@ -448,55 +596,50 @@ def prepare_image(observation):
     )
 
     # --------------------------------------------------------
-    # Robosuite / MuJoCo camera convention
-    # --------------------------------------------------------
-
-    	image = image[::-1]
-
-    # --------------------------------------------------------
-    # Ensure RGB
+    # Validate
     # --------------------------------------------------------
 
     if image.ndim != 3:
 
         raise RuntimeError(
-            f"Unexpected camera image shape: {image.shape}"
+            "Unexpected camera image "
+            f"shape: {image.shape}"
         )
 
     if image.shape[2] != 3:
 
         raise RuntimeError(
-            f"Expected RGB image, got: {image.shape}"
+            "Expected RGB image with "
+            f"3 channels, got {image.shape}"
         )
 
     return image
 
 
 # ============================================================
-# 7. OPENVLA → ROBOSUITE ACTION
+# 8. OPENVLA → ROBOSUITE ACTION
 # ============================================================
 
 def convert_vla_action_to_robosuite(
     vla_action,
 ):
     """
-    Convert OpenVLA's 7-D BridgeData action to the action
-    expected by the Robosuite OSC_POSE controller.
+    Convert OpenVLA's 7-D BridgeData action into the
+    7-D Robosuite action.
+
+    THIS IS THE SAME CONVERSION USED IN THE EXISTING
+    franka_agent.py.
 
     OpenVLA:
 
         [dx, dy, dz, dRx, dRy, dRz, gripper]
 
-    Robosuite OSC_POSE:
+    Robosuite:
 
         [dx, dy, dz, dRx, dRy, dRz, gripper]
 
-    The important point is that Robosuite owns the
-    robot-level IK / OSC computation.
-
-    We therefore DO NOT calculate a Jacobian here.
-
-    --------------------------------------------------------
+    First six values:
+        copied unchanged.
 
     Gripper:
 
@@ -508,12 +651,36 @@ def convert_vla_action_to_robosuite(
             -1 = open
             +1 = closed
 
+        Therefore:
+
+            robosuite_gripper
+                = 2 * vla_gripper - 1
+
+    IMPORTANT:
+
+    There is intentionally NO:
+
+        position scaling
+        rotation scaling
+        coordinate-frame rotation
+        Jacobian calculation
+        IK calculation
+
+    Robosuite's OSC_POSE controller handles the robot control.
     """
+
+    # --------------------------------------------------------
+    # Convert to numpy
+    # --------------------------------------------------------
 
     action = np.asarray(
         vla_action,
         dtype=np.float32,
     ).copy()
+
+    # --------------------------------------------------------
+    # Validate
+    # --------------------------------------------------------
 
     if action.shape != (7,):
 
@@ -522,19 +689,22 @@ def convert_vla_action_to_robosuite(
         if action.shape[0] != 7:
 
             raise RuntimeError(
-                f"Expected 7-D action, got {action.shape}"
+                "Expected 7-D OpenVLA action, "
+                f"got {action.shape}"
             )
 
     # --------------------------------------------------------
-    # Copy the Cartesian pose action.
+    # Copy all seven values
     # --------------------------------------------------------
 
-    robosuite_action = action.copy()
+    robosuite_action = (
+        action.copy()
+    )
 
     # --------------------------------------------------------
     # Gripper conversion
     # --------------------------------------------------------
-
+    #
     # OpenVLA:
     #
     #     0 -> open
@@ -542,15 +712,21 @@ def convert_vla_action_to_robosuite(
     #
     # Robosuite:
     #
-    #     -1 -> open
-    #     +1 -> closed
+    #    -1 -> open
+    #    +1 -> closed
+    #
+    # Therefore:
+    #
+    #     0 -> -1
+    #     1 -> +1
+    #
 
     robosuite_action[6] = (
         2.0 * action[6] - 1.0
     )
 
     # --------------------------------------------------------
-    # Clamp gripper.
+    # Clamp gripper
     # --------------------------------------------------------
 
     robosuite_action[6] = np.clip(
@@ -563,101 +739,137 @@ def convert_vla_action_to_robosuite(
 
 
 # ============================================================
-# 8. ROBOT STATE DIAGNOSTICS
+# 9. ROBOT STATE
 # ============================================================
 
-def print_robot_state(
+def get_eef_state(
     env,
-    step_number,
 ):
-    """
-    Print the Panda end-effector state.
 
-    This is diagnostic only.
-    """
+    robot = env.robots[0]
 
-    if not Config.print_robot_state:
-        return
+    eef_site_id = (
+        robot.eef_site_id
+    )
+
+    eef_pos = np.asarray(
+        robot.sim.data.site_xpos[
+            eef_site_id
+        ]
+    ).copy()
+
+    eef_rot = np.asarray(
+        robot.sim.data.site_xmat[
+            eef_site_id
+        ]
+    ).reshape(
+        3,
+        3,
+    ).copy()
+
+    return (
+        eef_pos,
+        eef_rot,
+    )
+
+
+# ============================================================
+# 10. CUBE STATE
+# ============================================================
+
+def get_cube_position_from_observation(
+    observation,
+):
+
+    if "cube_pos" in observation:
+
+        return np.asarray(
+            observation["cube_pos"],
+            dtype=np.float64,
+        ).copy()
+
+    return None
+
+
+def get_cube_position_from_sim(
+    env,
+):
 
     try:
 
-        robot = env.robots[0]
+        cube_body_id = (
+            env.obj_body_id["cube"]
+        )
 
-        # End-effector position
-        eef_pos = np.asarray(
-            robot.sim.data.site_xpos[
-                robot.eef_site_id
+        return np.asarray(
+            env.sim.data.body_xpos[
+                cube_body_id
             ]
-        )
+        ).copy()
 
-        # End-effector orientation
-        eef_rot = np.asarray(
-            robot.sim.data.site_xmat[
-                robot.eef_site_id
-            ]
-        ).reshape(3, 3)
+    except Exception:
 
-        print(
-            f"  EEF position: "
-            f"[{eef_pos[0]:+.4f}, "
-            f"{eef_pos[1]:+.4f}, "
-            f"{eef_pos[2]:+.4f}]"
-        )
-
-        print(
-            "  EEF rotation matrix:"
-        )
-
-        print(eef_rot)
-
-    except Exception as exc:
-
-        print(
-            "  Could not read EEF state:",
-            repr(exc),
-        )
+        return None
 
 
 # ============================================================
-# 9. VIDEO
+# 11. SAVE VIDEO
 # ============================================================
 
 def save_video(
     frames,
+    output_folder,
+    episode,
     instruction,
-    episode_number,
 ):
-    """
-    Save recorded RGB frames as MP4.
-    """
 
-    os.makedirs(
-        Config.output_folder,
+    output_folder = Path(
+        output_folder
+    )
+
+    output_folder.mkdir(
+        parents=True,
         exist_ok=True,
     )
 
     safe_instruction = (
         instruction
+        .strip()
         .lower()
         .replace(" ", "_")
-        .replace("\n", "_")
-        .replace(".", "_")
-    )[:60]
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "_")
+    )
 
-    video_file = os.path.join(
-        Config.output_folder,
-        (
-            f"episode={episode_number}"
+    video_path = (
+        output_folder
+        / (
+            f"episode={episode}"
             f"--prompt={safe_instruction}.mp4"
-        ),
+        )
     )
 
     print()
-    print("Saving video:")
-    print(video_file)
+    print("=" * 70)
+    print("SAVING VIDEO")
+    print("=" * 70)
+
+    print(
+        "Path:",
+        video_path,
+    )
+
+    if len(frames) == 0:
+
+        print(
+            "WARNING: No frames were recorded."
+        )
+
+        return None
 
     writer = imageio.get_writer(
-        video_file,
+        str(video_path),
         fps=30,
     )
 
@@ -665,29 +877,34 @@ def save_video(
 
         for frame in frames:
 
-            writer.append_data(frame)
+            writer.append_data(
+                np.asarray(
+                    frame,
+                    dtype=np.uint8,
+                )
+            )
 
     finally:
 
         writer.close()
 
-    print("Video saved.")
+    print(
+        "Video saved."
+    )
 
-    return video_file
+    return str(video_path)
 
 
 # ============================================================
-# 10. SINGLE EPISODE
+# 12. RUN ONE EPISODE
 # ============================================================
 
 def run_episode(
     env,
     vla,
     instruction,
+    episode,
 ):
-    """
-    Run one complete OpenVLA → Robosuite episode.
-    """
 
     print()
     print("=" * 70)
@@ -695,8 +912,15 @@ def run_episode(
     print("=" * 70)
 
     print()
-    print("Instruction:")
-    print(instruction)
+    print(
+        "Instruction:",
+        instruction,
+    )
+
+    print(
+        "Episode:",
+        episode,
+    )
 
     # --------------------------------------------------------
     # Reset
@@ -704,112 +928,225 @@ def run_episode(
 
     observation = env.reset()
 
-    frames = []
+    print()
+    print(
+        "Observation keys:"
+    )
 
-    successful = False
+    print(
+        list(
+            observation.keys()
+        )
+    )
 
     # --------------------------------------------------------
-    # Warm-up
+    # Verify camera immediately
+    # --------------------------------------------------------
+
+    camera_key = (
+        f"{Config.CAMERA_NAME}_image"
+    )
+
+    if camera_key not in observation:
+
+        raise RuntimeError(
+            f"Expected camera key "
+            f"'{camera_key}' was not found. "
+            f"Observation keys: "
+            f"{list(observation.keys())}"
+        )
+
+    # --------------------------------------------------------
+    # Video frames
+    # --------------------------------------------------------
+
+    frames = []
+
+    # --------------------------------------------------------
+    # Initial image
+    # --------------------------------------------------------
+
+    initial_image = prepare_image(
+        observation
+    )
+
+    print()
+    print(
+        "Initial camera image:",
+        initial_image.shape,
+        initial_image.dtype,
+    )
+
+    # Save initial image for debugging.
+
+    debug_image_path = (
+        Path(Config.OUTPUT_FOLDER)
+        / "first_vla_frame.png"
+    )
+
+    debug_image_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    Image.fromarray(
+        initial_image
+    ).save(
+        debug_image_path
+    )
+
+    print(
+        "Initial image saved:",
+        debug_image_path,
+    )
+
+    # --------------------------------------------------------
+    # Warmup
     # --------------------------------------------------------
 
     print()
     print(
-        f"Warming up for {Config.warmup_steps} steps..."
+        f"Warmup: "
+        f"{Config.WARMUP_STEPS} steps"
     )
 
-    # Robosuite action dimension:
+    # Robosuite gripper:
     #
-    # [dx,dy,dz,dRx,dRy,dRz,gripper]
+    #     -1 = open
+    #
 
     no_op = np.zeros(
         7,
         dtype=np.float32,
     )
 
-    # Gripper open during warmup.
     no_op[6] = -1.0
 
     for warmup_step in range(
-        Config.warmup_steps
+        Config.WARMUP_STEPS
     ):
 
-        observation, reward, done, info = env.step(
+        (
+            observation,
+            reward,
+            done,
+            info,
+        ) = env.step(
             no_op
         )
 
-    print("Warm-up complete.")
+        if done:
+
+            print(
+                "Environment ended during warmup."
+            )
+
+            break
+
+    print(
+        "Warmup complete."
+    )
 
     # --------------------------------------------------------
-    # Main loop
+    # Main control loop
     # --------------------------------------------------------
 
-    for step_number in range(
-        Config.maximum_steps
+    successful = False
+
+    for step in range(
+        Config.MAX_STEPS
     ):
 
         print()
-        print("-" * 70)
         print(
-            f"STEP {step_number + 1} / "
-            f"{Config.maximum_steps}"
+            "=" * 70
         )
-        print("-" * 70)
 
-        # ----------------------------------------------------
-        # Image
-        # ----------------------------------------------------
+        print(
+            f"STEP {step + 1} / "
+            f"{Config.MAX_STEPS}"
+        )
 
-        camera_frame = prepare_image(
+        print(
+            "=" * 70
+        )
+
+        # ====================================================
+        # 1. IMAGE
+        # ====================================================
+
+        image = prepare_image(
             observation
         )
 
+        # Store image for video.
+
         frames.append(
-            camera_frame.copy()
+            image.copy()
         )
 
-        if step_number == 0:
+        # ====================================================
+        # 2. ROBOT STATE BEFORE ACTION
+        # ====================================================
 
-            print()
-            print(
-                "Camera image shape:",
-                camera_frame.shape,
+        try:
+
+            eef_before, eef_rot_before = (
+                get_eef_state(env)
             )
 
-            print(
-                "Camera image dtype:",
-                camera_frame.dtype,
+        except Exception:
+
+            eef_before = None
+            eef_rot_before = None
+
+        cube_before = (
+            get_cube_position_from_observation(
+                observation
+            )
+        )
+
+        if cube_before is None:
+
+            cube_before = (
+                get_cube_position_from_sim(
+                    env
+                )
             )
 
-        # ----------------------------------------------------
-        # OpenVLA
-        # ----------------------------------------------------
+        # ====================================================
+        # 3. OPENVLA
+        # ====================================================
 
-        t0 = time.time()
+        prediction_start = (
+            time.time()
+        )
 
         vla_action = vla.predict(
-            image=camera_frame,
+            image=image,
             instruction=instruction,
         )
 
-        inference_time = (
-            time.time() - t0
+        prediction_time = (
+            time.time()
+            - prediction_start
         )
 
-        # ----------------------------------------------------
-        # Convert action
-        # ----------------------------------------------------
+        # ====================================================
+        # 4. CONVERT OPENVLA ACTION
+        # ====================================================
 
-        robosuite_action = (
+        robot_action = (
             convert_vla_action_to_robosuite(
                 vla_action
             )
         )
 
-        # ----------------------------------------------------
-        # Diagnostics
-        # ----------------------------------------------------
+        # ====================================================
+        # 5. PRINT ACTION
+        # ====================================================
 
-        if Config.print_actions:
+        if Config.PRINT_ACTIONS:
 
             print()
             print(
@@ -819,7 +1156,7 @@ def run_episode(
             print(
                 np.array2string(
                     vla_action,
-                    precision=5,
+                    precision=6,
                     suppress_small=False,
                 )
             )
@@ -831,24 +1168,24 @@ def run_episode(
 
             print(
                 np.array2string(
-                    robosuite_action,
-                    precision=5,
+                    robot_action,
+                    precision=6,
                     suppress_small=False,
                 )
             )
 
             print()
             print(
-                f"Inference time: "
-                f"{inference_time:.3f} sec"
+                f"OpenVLA inference: "
+                f"{prediction_time:.3f} sec"
             )
 
-        # ----------------------------------------------------
-        # Execute action
-        # ----------------------------------------------------
+        # ====================================================
+        # 6. EXECUTE ROBOT ACTION
+        # ====================================================
 
-        for repeat_number in range(
-            Config.action_repeat
+        for repeat in range(
+            Config.ACTION_REPEAT
         ):
 
             (
@@ -857,51 +1194,151 @@ def run_episode(
                 done,
                 info,
             ) = env.step(
-                robosuite_action
+                robot_action
             )
 
-        # ----------------------------------------------------
-        # State diagnostics
-        # ----------------------------------------------------
+        # ====================================================
+        # 7. ROBOT STATE AFTER ACTION
+        # ====================================================
 
-        print_robot_state(
-            env,
-            step_number,
+        try:
+
+            eef_after, eef_rot_after = (
+                get_eef_state(env)
+            )
+
+        except Exception:
+
+            eef_after = None
+            eef_rot_after = None
+
+        if Config.PRINT_STATE:
+
+            if eef_after is not None:
+
+                print()
+                print(
+                    "EEF position:"
+                )
+
+                print(
+                    np.array2string(
+                        eef_after,
+                        precision=6,
+                        suppress_small=False,
+                    )
+                )
+
+            if (
+                eef_before is not None
+                and eef_after is not None
+            ):
+
+                actual_motion = (
+                    eef_after
+                    - eef_before
+                )
+
+                print()
+                print(
+                    "Actual EEF motion:"
+                )
+
+                print(
+                    np.array2string(
+                        actual_motion,
+                        precision=6,
+                        suppress_small=False,
+                    )
+                )
+
+        # ====================================================
+        # 8. CUBE / EEF DISTANCE
+        # ====================================================
+
+        cube_after = (
+            get_cube_position_from_observation(
+                observation
+            )
         )
 
-        # ----------------------------------------------------
-        # Reward
-        # ----------------------------------------------------
+        if cube_after is None:
 
+            cube_after = (
+                get_cube_position_from_sim(
+                    env
+                )
+            )
+
+        if (
+            cube_after is not None
+            and eef_after is not None
+        ):
+
+            eef_to_cube = (
+                cube_after
+                - eef_after
+            )
+
+            distance = (
+                np.linalg.norm(
+                    eef_to_cube
+                )
+            )
+
+            print()
+            print(
+                "Cube position:"
+            )
+
+            print(
+                np.array2string(
+                    cube_after,
+                    precision=6,
+                )
+            )
+
+            print(
+                "EEF → cube distance:",
+                f"{distance:.5f} m",
+            )
+
+        # ====================================================
+        # 9. REWARD
+        # ====================================================
+
+        print()
         print(
-            f"  Reward: {reward}"
+            "Reward:",
+            reward,
         )
 
-        # ----------------------------------------------------
-        # Success
-        # ----------------------------------------------------
+        # ====================================================
+        # 10. SUCCESS
+        # ====================================================
 
-        # Robosuite's Lift environment provides reward/success
-        # information through its reward / info machinery.
-        #
-        # We check both where possible.
+        success = False
 
-        is_success = False
+        if isinstance(
+            info,
+            dict,
+        ):
 
-        if isinstance(info, dict):
-
-            is_success = bool(
+            success = bool(
                 info.get(
                     "success",
                     False,
                 )
             )
 
-        if not is_success:
+        # Robosuite environments commonly expose
+        # _check_success().
+
+        if not success:
 
             try:
 
-                is_success = bool(
+                success = bool(
                     env._check_success()
                 )
 
@@ -909,18 +1346,28 @@ def run_episode(
 
                 pass
 
-        if is_success:
+        if success:
 
             successful = True
 
             print()
-            print("=" * 70)
             print(
-                "SUCCESS: Robosuite reports task success."
+                "=" * 70
             )
-            print("=" * 70)
+
+            print(
+                "SUCCESS"
+            )
+
+            print(
+                "=" * 70
+            )
 
             break
+
+        # ====================================================
+        # 11. DONE
+        # ====================================================
 
         if done:
 
@@ -931,55 +1378,68 @@ def run_episode(
 
             break
 
-    # --------------------------------------------------------
-    # Failure
-    # --------------------------------------------------------
+    # ========================================================
+    # RESULT
+    # ========================================================
 
     if not successful:
 
         print()
-        print("=" * 70)
         print(
-            "FAILED / TIMEOUT: "
-            "Task was not completed."
+            "=" * 70
         )
-        print("=" * 70)
 
-    # --------------------------------------------------------
-    # Save video
-    # --------------------------------------------------------
+        print(
+            "EPISODE FINISHED WITHOUT SUCCESS"
+        )
+
+        print(
+            "=" * 70
+        )
+
+    # ========================================================
+    # VIDEO
+    # ========================================================
 
     video_file = save_video(
         frames=frames,
+        output_folder=Config.OUTPUT_FOLDER,
+        episode=episode,
         instruction=instruction,
-        episode_number=Config.episode_number,
     )
 
-    return successful, video_file
+    return (
+        successful,
+        video_file,
+    )
 
 
 # ============================================================
-# 11. MAIN
+# 13. MAIN
 # ============================================================
 
 def main():
 
     print()
     print("=" * 70)
-    print("OPENVLA + ROBOSUITE PANDA")
+    print("OPENVLA + ROBOSUITE FRANKA PANDA")
     print("=" * 70)
 
     print()
-    print("Python:")
-    print(sys.executable)
+    print(
+        "Python:",
+        sys.executable,
+    )
 
-    print()
-    print("PyTorch:")
-    print(torch.__version__)
+    print(
+        "PyTorch:",
+        torch.__version__,
+    )
 
-    print()
-    print("CUDA available:")
-    print(torch.cuda.is_available())
+    print(
+        "CUDA available:",
+        torch.cuda.is_available(),
+    )
 
     if torch.cuda.is_available():
 
@@ -988,187 +1448,172 @@ def main():
             torch.cuda.get_device_name(0),
         )
 
-    # --------------------------------------------------------
-    # Create VLA
-    # --------------------------------------------------------
-
-    vla = OpenVLA(
-        model_name=Config.model_name,
-        gpu=Config.gpu,
-        normalization_key=Config.normalization_key,
+    print()
+    print(
+        "MUJOCO_GL:",
+        os.environ.get(
+            "MUJOCO_GL"
+        ),
     )
 
     # --------------------------------------------------------
-    # Create Robosuite
+    # OpenVLA
+    # --------------------------------------------------------
+
+    vla = OpenVLAWrapper(
+        model_name=Config.MODEL_NAME,
+        device=Config.DEVICE,
+        normalization_key=(
+            Config.NORMALIZATION_KEY
+        ),
+    )
+
+    # --------------------------------------------------------
+    # Robosuite
     # --------------------------------------------------------
 
     env = create_environment()
 
     try:
 
-        # ----------------------------------------------------
-        # Run
-        # ----------------------------------------------------
-
-        successful, video_file = run_episode(
-            env=env,
-            vla=vla,
-            instruction=Config.instruction,
+        successful, video_file = (
+            run_episode(
+                env=env,
+                vla=vla,
+                instruction=Config.INSTRUCTION,
+                episode=Config.EPISODE,
+            )
         )
 
         print()
         print("=" * 70)
-        print("SIMULATION COMPLETE")
+        print("COMPLETE")
         print("=" * 70)
 
         print()
         print(
             "Result:",
-            "SUCCESS" if successful else "FAILURE",
+            "SUCCESS"
+            if successful
+            else "FAILURE",
         )
 
-        print()
         print(
             "Video:",
             video_file,
         )
 
+        return successful
+
     finally:
 
-        # ----------------------------------------------------
-        # Cleanup
-        # ----------------------------------------------------
-
         print()
-        print("Closing Robosuite environment...")
+        print(
+            "Closing Robosuite environment..."
+        )
 
         env.close()
 
-        print("Environment closed.")
+        print(
+            "Environment closed."
+        )
 
 
 # ============================================================
-# 12. COMMAND-LINE ENTRY POINT
+# 14. COMMAND LINE
 # ============================================================
 
-def main():
-    import argparse
+if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
-        description="Run OpenVLA + Robosuite Panda inference."
+        description=(
+            "OpenVLA + Robosuite "
+            "Franka Panda agent"
+        )
     )
+
     parser.add_argument(
         "--instruction",
-        default=Config.instruction,
+        default=Config.INSTRUCTION,
         help="Robot task instruction.",
     )
+
     parser.add_argument(
         "--model",
-        default=Config.model_name,
-        help="Hugging Face OpenVLA model name.",
+        default=Config.MODEL_NAME,
+        help="OpenVLA model.",
     )
+
     parser.add_argument(
         "--output-folder",
-        default=Config.output_folder,
-        help="Folder in which to save the episode video.",
+        default=Config.OUTPUT_FOLDER,
+        help="Video output directory.",
     )
+
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=Config.maximum_steps,
-        help="Maximum number of Robosuite control steps.",
+        default=Config.MAX_STEPS,
+        help="Maximum number of control steps.",
     )
+
     parser.add_argument(
         "--warmup-steps",
         type=int,
-        default=Config.warmup_steps,
-        help="Number of no-op warmup steps.",
+        default=Config.WARMUP_STEPS,
+        help="Number of warmup steps.",
     )
+
     parser.add_argument(
         "--action-repeat",
         type=int,
-        default=Config.action_repeat,
-        help="Number of Robosuite steps per OpenVLA action.",
+        default=Config.ACTION_REPEAT,
+        help="Number of Robosuite steps per VLA action.",
     )
+
     parser.add_argument(
         "--episode",
         type=int,
-        default=Config.episode_number,
-        help="Episode number used in the output filename.",
+        default=Config.EPISODE,
+        help="Episode number.",
     )
 
     args = parser.parse_args()
 
-    # Apply command-line configuration.
-    Config.instruction = args.instruction
-    Config.model_name = args.model
-    Config.output_folder = args.output_folder
-    Config.maximum_steps = args.max_steps
-    Config.warmup_steps = args.warmup_steps
-    Config.action_repeat = args.action_repeat
-    Config.episode_number = args.episode
+    # --------------------------------------------------------
+    # Apply CLI arguments
+    # --------------------------------------------------------
 
-    main_start = time.time()
-
-    print()
-    print("=" * 70)
-    print("OPENVLA + ROBOSUITE PANDA")
-    print("=" * 70)
-
-    print()
-    print("Python:")
-    print(sys.executable)
-
-    print()
-    print("PyTorch:")
-    print(torch.__version__)
-
-    print()
-    print("CUDA available:")
-    print(torch.cuda.is_available())
-
-    if torch.cuda.is_available():
-        print("GPU:", torch.cuda.get_device_name(0))
-
-    # ------------------------------------------------------------
-    # Create VLA
-    # ------------------------------------------------------------
-
-    vla = OpenVLA(
-        model_name=Config.model_name,
-        gpu=Config.gpu,
-        normalization_key=Config.normalization_key,
+    Config.INSTRUCTION = (
+        args.instruction
     )
 
-    # ------------------------------------------------------------
-    # Create Robosuite
-    # ------------------------------------------------------------
+    Config.MODEL_NAME = (
+        args.model
+    )
 
-    env = create_environment()
+    Config.OUTPUT_FOLDER = (
+        args.output_folder
+    )
 
-    try:
-        successful, video_file = run_episode(
-            env=env,
-            vla=vla,
-            instruction=Config.instruction,
-        )
+    Config.MAX_STEPS = (
+        args.max_steps
+    )
 
-        print()
-        print("=" * 70)
-        print("SIMULATION COMPLETE")
-        print("=" * 70)
+    Config.WARMUP_STEPS = (
+        args.warmup_steps
+    )
 
-        print()
-        print("Result:", "SUCCESS" if successful else "FAILURE")
-        print("Video:", video_file)
-        print(f"Total runtime: {time.time() - main_start:.2f} sec")
+    Config.ACTION_REPEAT = (
+        args.action_repeat
+    )
 
-    finally:
-        print()
-        print("Closing Robosuite environment...")
-        env.close()
-        print("Environment closed.")
+    Config.EPISODE = (
+        args.episode
+    )
 
+    # --------------------------------------------------------
+    # Run
+    # --------------------------------------------------------
 
-if __name__ == "__main__":
     main()
