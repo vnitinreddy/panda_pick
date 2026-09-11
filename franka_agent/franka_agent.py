@@ -93,7 +93,7 @@ class Config:
     # Output
     # --------------------------------------------------------
 
-    output_folder = "/content/PickAgent/outputs/videos"
+    output_folder = "/content/panda_pick/franka_agent/outputs/videos"
 
     episode_number = 0
 
@@ -432,16 +432,15 @@ def prepare_image(observation):
     We do NOT rotate 180 degrees like the LIBERO code.
     """
 
-    if Config.camera_name not in observation:
+    camera_key = f"{Config.camera_name}_image"
 
+    if camera_key not in observation:
         raise RuntimeError(
-            f"Camera '{Config.camera_name}' not found in "
+            f"Camera image '{camera_key}' not found in "
             f"observation keys: {list(observation.keys())}"
         )
 
-    image = observation[
-        Config.camera_name
-    ]
+    image = observation[camera_key]	
 
     image = np.asarray(
         image,
@@ -452,7 +451,7 @@ def prepare_image(observation):
     # Robosuite / MuJoCo camera convention
     # --------------------------------------------------------
 
-    image = image[::-1]
+    	image = image[::-1]
 
     # --------------------------------------------------------
     # Ensure RGB
