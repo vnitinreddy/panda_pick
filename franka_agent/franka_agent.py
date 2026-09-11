@@ -84,6 +84,8 @@ from transformers import (
     AutoModelForVision2Seq,
 )
 
+import tensorflow as tf
+
 
 # ============================================================
 # 3. PATHS
