@@ -580,6 +580,26 @@ def create_environment():
 # ============================================================
 # 7. CAMERA IMAGE
 # ============================================================
+def resize_image(image, target_size):
+    image = tf.image.encode_jpeg(image)
+    image = tf.io.decode_image(
+        image,
+        expand_animations=False,
+        dtype=tf.uint8,
+    )
+    image = tf.image.resize(
+        image,
+        (target_size, target_size),
+        method="lanczos3",
+        antialias=True,
+    )
+    image = tf.cast(
+        tf.clip_by_value(tf.round(image), 0, 255),
+        tf.uint8,
+    )
+    return image.numpy()
+
+
 def prepare_image(observation):
     camera_key = f"{Config.CAMERA_NAME}_image"
 
@@ -595,6 +615,9 @@ def prepare_image(observation):
         raise RuntimeError(
             f"Unexpected camera image shape: {image.shape}"
         )
+
+    # Robosuite agentview does NOT need the LIBERO-specific 180° rotation.
+    image = resize_image(image, 1024)
 
     return image
 
