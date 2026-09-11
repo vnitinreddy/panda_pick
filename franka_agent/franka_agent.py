@@ -280,150 +280,29 @@ class OpenVLAWrapper:
     # ========================================================
 
     @torch.inference_mode()
-'''
-    def predict(
-        self,
-        image,
-        instruction,
-    ):
-
-        # ----------------------------------------------------
-        # Convert image to PIL
-        # ----------------------------------------------------
-
-        if isinstance(
-            image,
-            np.ndarray,
-        ):
-
-            image = Image.fromarray(
-                image
-            ).convert("RGB")
-
-        elif isinstance(
-            image,
-            Image.Image,
-        ):
-
-            image = image.convert("RGB")
-
-        else:
-
-            raise TypeError(
-                "Unsupported image type: "
-                f"{type(image)}"
-            )
-
-        # ----------------------------------------------------
-        # Prompt
-        # ----------------------------------------------------
-
-        prompt = Config.PROMPT_TEMPLATE.format(
-            instruction=instruction.lower()
+    def predict(self, image, instruction):
+        image = Image.fromarray(image).convert("RGB")
+    
+        model_prompt = (
+            "In: What action should the robot take to "
+            f"{instruction.lower()}?\nOut:"
         )
-
-        # ----------------------------------------------------
-        # Processor
-        # ----------------------------------------------------
-
-        inputs = self.processor(
-            prompt,
-            image,
+    
+        model_inputs = self.processor(
+            model_prompt,
+            image
+        ).to(
+            self.device,
+            dtype=torch.bfloat16
         )
-
-        # ----------------------------------------------------
-        # Move tensors to GPU
-        # ----------------------------------------------------
-
-        for key in inputs:
-
-            if hasattr(
-                inputs[key],
-                "to",
-            ):
-
-                inputs[key] = (
-                    inputs[key]
-                    .to(self.device)
-                )
-
-        # ----------------------------------------------------
-        # OpenVLA prediction
-        # ----------------------------------------------------
-
+    
         action = self.model.predict_action(
-            **inputs,
-            unnorm_key=self.normalization_key,
-            do_sample=False,
+            **model_inputs,
+            unnorm_key=self.unnorm_key,
+            do_sample=False
         )
-
-        # ----------------------------------------------------
-        # Convert output to numpy
-        # ----------------------------------------------------
-
-        if isinstance(
-            action,
-            torch.Tensor,
-        ):
-
-            action = (
-                action
-                .detach()
-                .float()
-                .cpu()
-                .numpy()
-            )
-
-        else:
-
-            action = np.asarray(
-                action,
-                dtype=np.float32,
-            )
-
-        action = np.asarray(
-            action,
-            dtype=np.float32,
-        ).reshape(-1)
-
-        # ----------------------------------------------------
-        # Validate action
-        # ----------------------------------------------------
-
-        if action.shape[0] != 7:
-
-            raise RuntimeError(
-                "OpenVLA returned "
-                f"{action.shape[0]} action values. "
-                "Expected exactly 7."
-            )
-
+    
         return action
-'''
-
-def predict(self, image, instruction):
-    image = Image.fromarray(image).convert("RGB")
-
-    model_prompt = (
-        "In: What action should the robot take to "
-        f"{instruction.lower()}?\nOut:"
-    )
-
-    model_inputs = self.processor(
-        model_prompt,
-        image
-    ).to(
-        self.device,
-        dtype=torch.bfloat16
-    )
-
-    action = self.model.predict_action(
-        **model_inputs,
-        unnorm_key=self.unnorm_key,
-        do_sample=False
-    )
-
-    return action
 
 # ============================================================
 # 6. ROBOSUITE ENVIRONMENT
