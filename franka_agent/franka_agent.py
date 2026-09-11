@@ -7,25 +7,23 @@
 #
 # Pipeline:
 #
-#   Robosuite Panda
-#        |
-#        v
-#   agentview_image
-#        |
-#        v
-#   OpenVLA
-#        |
-#        v
-#   7-D BridgeData action
-#        |
-#        v
-#   convert_vla_action_to_robosuite()
-#        |
-#        v
-#   Robosuite OSC_POSE
-#        |
-#        v
-#   Franka Panda
+'''
+observation
+    ↓
+prepare_image(observation)
+    ↓
+observation["agentview_image"]
+    ↓
+resize_image(image, 1024)
+    ↓
+1024 × 1024 uint8 image
+    ↓
+OpenVLA.predict(...)
+    ↓
+Image.fromarray(image).convert("RGB")
+    ↓
+processor(...)
+'''
 #
 # IMPORTANT:
 #
