@@ -282,6 +282,7 @@ class OpenVLAWrapper:
     # ========================================================
 
     @torch.inference_mode()
+'''
     def predict(
         self,
         image,
@@ -400,7 +401,31 @@ class OpenVLAWrapper:
             )
 
         return action
+'''
 
+def predict(self, image, instruction):
+    image = Image.fromarray(image).convert("RGB")
+
+    model_prompt = (
+        "In: What action should the robot take to "
+        f"{instruction.lower()}?\nOut:"
+    )
+
+    model_inputs = self.processor(
+        model_prompt,
+        image
+    ).to(
+        self.device,
+        dtype=torch.bfloat16
+    )
+
+    action = self.model.predict_action(
+        **model_inputs,
+        unnorm_key=self.unnorm_key,
+        do_sample=False
+    )
+
+    return action
 
 # ============================================================
 # 6. ROBOSUITE ENVIRONMENT
