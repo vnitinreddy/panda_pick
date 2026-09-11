@@ -555,66 +555,23 @@ def create_environment():
 # ============================================================
 # 7. CAMERA IMAGE
 # ============================================================
-
-def prepare_image(
-    observation,
-):
-    """
-    Extract the camera image from the Robosuite observation.
-
-    The expected observation key is:
-
-        agentview_image
-
-    IMPORTANT:
-
-    We do NOT vertically flip the image here.
-
-    The previous working MuJoCo implementation passed the
-    rendered camera image directly to OpenVLA.
-    """
-
-    camera_key = (
-        f"{Config.CAMERA_NAME}_image"
-    )
+def prepare_image(observation):
+    camera_key = f"{Config.CAMERA_NAME}_image"
 
     if camera_key not in observation:
-
         raise RuntimeError(
-            f"Camera image '{camera_key}' "
-            "not found in observation keys: "
+            f"Camera image '{camera_key}' not found in observation keys: "
             f"{list(observation.keys())}"
         )
 
-    image = observation[
-        camera_key
-    ]
+    image = np.asarray(observation[camera_key], dtype=np.uint8)
 
-    image = np.asarray(
-        image,
-        dtype=np.uint8,
-    )
-
-    # --------------------------------------------------------
-    # Validate
-    # --------------------------------------------------------
-
-    if image.ndim != 3:
-
+    if image.ndim != 3 or image.shape[2] != 3:
         raise RuntimeError(
-            "Unexpected camera image "
-            f"shape: {image.shape}"
-        )
-
-    if image.shape[2] != 3:
-
-        raise RuntimeError(
-            "Expected RGB image with "
-            f"3 channels, got {image.shape}"
+            f"Unexpected camera image shape: {image.shape}"
         )
 
     return image
-
 
 # ============================================================
 # 8. OPENVLA → ROBOSUITE ACTION
