@@ -197,8 +197,7 @@ class OpenVLAWrapper:
 
         self.model_name = model_name
         self.device = device
-        self.normalization_key = normalization_key
-        self.unnorm_key = "bridge_orig"
+        self.unnorm_key = normalization_key
 
         print()
         print("=" * 70)
@@ -220,8 +219,6 @@ class OpenVLAWrapper:
             normalization_key,
         )
 
-        print(self.unnorm_key)
-        
         # ----------------------------------------------------
         # Processor
         # ----------------------------------------------------
