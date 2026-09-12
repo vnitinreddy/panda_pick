@@ -220,6 +220,8 @@ class OpenVLAWrapper:
             normalization_key,
         )
 
+        print(self.unnorm_key)
+        
         # ----------------------------------------------------
         # Processor
         # ----------------------------------------------------
