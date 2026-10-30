@@ -1,4 +1,4 @@
-Simply copy the jupyter notebook and run it. It sets up the environment, loads and runs the model on GPU, and downloads the agent script (arm_agent.py) and runs it as a subprocess. The agent script controls the simulated robot arm by taking a snapshot of robot arm environment, sending it to OpenVLA for action prediction, and use the action predicted to move the Panda robot arm inside the LIBERO environment.
+Simply copy the jupyter notebook into your Google Colab or other similar environment and run it. It sets up the environment, loads and runs the model on GPU, and downloads the agent script (arm_agent.py) and runs it as a subprocess. The agent script controls the simulated robot arm by taking a snapshot of robot arm environment, sending it to OpenVLA for action prediction, and use the action predicted to move the Panda robot arm inside the LIBERO environment.
 
 robot camera → vision-language model → action command → LIBERO environment → repeat
 
