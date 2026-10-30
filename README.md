@@ -2,8 +2,7 @@
 
 This project uses OpenVLA to control Panda arm for Pick up tasks.
 
-Built an inference-to-control pipeline for pick-and-place tasks based on action predictions from the OpenVLA model hosted in Google Colab.
-
+Built an inference-to-control pipeline for a Franka Panda arm to execute pick-and-place tasks based on action predictions from the OpenVLA model hosted on Google Colab
 
 franka_agent/move_robot.py: Allows you to move the robot to a given point
 franka_agent/camera_to_xml.py:
