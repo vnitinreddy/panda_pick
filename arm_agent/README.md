@@ -114,4 +114,8 @@ main:
 
 vla_libero3.ipynb 
 -----------------
-This jupyter notebook 
+This jupyter notebook does everything needed. At a highlevel, it is divided into 2 steps:
+1) Setup environment
+2) Pull arm_agent.py and run it is a subprocess for the inference (see the explanation above on what this agent script does).
+
+Setting up the environemnt:
