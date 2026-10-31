@@ -119,3 +119,18 @@ This jupyter notebook does everything needed. At a highlevel, it is divided into
 2) Pull arm_agent.py and run it is a subprocess for the inference (see the explanation above on what this agent script does).
 
 Setting up the environemnt:
+
+1. Mount Google Drive
+2. KEEP an existing /content/openvla_env
+3. Otherwise restore it from Drive
+4. If no archive exists, create Python 3.11 environment
+5. KEEP existing repositories
+6. Otherwise restore repository archive / clone
+7. Install only missing dependencies
+8. Repair only known compatibility pins when necessary
+9. Check MuJoCo 3.3.1 — DO NOT reinstall if already correct
+10. Fix LIBERO package marker only if missing
+11. Copy only missing LIBERO BDDL files
+12. Verify CUDA / PyTorch / OpenVLA / LIBERO / SimplerEnv / Arm Agent
+13. Actually construct a LIBERO OffScreenRenderEnv
+14. Refresh Drive archives ONLY if this setup changed something
