@@ -1,0 +1,33 @@
+# Environment for MuJoCo 3.0 + Stable Baselines3 + Gymnasium 0.29.1 on MacBook with x86 processor
+name: arm_rl_x86
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - nomkl
+  - numpy=1.26.4
+  - scipy
+  - matplotlib
+  - pandas
+  - tqdm
+  - pyyaml
+  - ipython
+  - pytorch>=2.2.0
+  - torchvision
+  - pybullet # reach_panda uses this
+  - pip:
+      - mujoco==3.10.0
+      - gymnasium==0.29.1
+      - gymnasium[mujoco]==0.29.1
+      - stable-baselines3==2.4.1
+      - sb3-contrib==2.4.0
+      - rich
+      - moviepy
+      - imageio-ffmpeg
+      - tensorboard
+variables:
+  KMP_DUPLICATE_LIB_OK: "TRUE"
+  MUJOCO_GL: "glfw"
+
