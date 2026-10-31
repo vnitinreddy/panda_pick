@@ -7,7 +7,7 @@ backup/ : This folder contains the backup scripts and jupyter notebooks used. Th
 
 The franka_agent/open_vla_and_mujoco_on_colab4.ipynb notebook contains the logic to run both the Panda and OpenVLA in Google Colab. Just copy the notebook to your colab and run it on an env with GPU (I tested it on A100 GPU). It sets up the required packages and then runs the inferencing loop needed for the given pick and place task.
 
-At a high level, it does this:
+At a high level, it’s a Colab-based robotics experiment notebook that connects a MuJoCo Panda environment to an OpenVLA model for simulated grasping and manipulation. The notebook does the following:
 
 * Sets up a persistent Python environment in Colab
 * Installs the required ML and simulation dependencies (PyTorch, Transformers, MuJoCo, MediaPipe, etc.)
