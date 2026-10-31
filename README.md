@@ -8,4 +8,4 @@ The franka_agent folder has the code for the client (or agent) and jupyter noteb
 
 The arm_agent folder has the code to use a fine tuned OpenVLA model and LIBERO environment (containing Panda and exposed through robosuite API) for the Pick and Place Tasks.
 
-The rl_ppo contains the logic for using StableBaselines Reinforcement Learning (RL) algorithm for fine tuning the Panda.
+The rl_ppo folder contains the logic for using StableBaselines Reinforcement Learning (RL) algorithm for fine tuning the Panda.
