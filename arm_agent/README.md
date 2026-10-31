@@ -120,17 +120,12 @@ This jupyter notebook does everything needed. At a highlevel, it is divided into
 
 Setting up the environemnt:
 
-1. Mount Google Drive
-2. KEEP an existing /content/openvla_env
-3. Otherwise restore it from Drive
-4. If no archive exists, create Python 3.11 environment
-5. KEEP existing repositories
-6. Otherwise restore repository archive / clone
-7. Install only missing dependencies
-8. Repair only known compatibility pins when necessary
-9. Check MuJoCo 3.3.1 — DO NOT reinstall if already correct
-10. Fix LIBERO package marker only if missing
-11. Copy only missing LIBERO BDDL files
-12. Verify CUDA / PyTorch / OpenVLA / LIBERO / SimplerEnv / Arm Agent
-13. Actually construct a LIBERO OffScreenRenderEnv
-14. Refresh Drive archives ONLY if this setup changed something
+* Mounts Google Drive and persistent storage so a Colab session can reuse cached files and project archives.
+* Restores or creates a Python environment and repository archives if they are already saved on Drive.
+* Clones the needed repos (OpenVLA, LIBERO, SimplerEnv, the Panda Pick project, etc.) if missing.
+* Checks and installs the required system packages and Python dependencies: Python 3.11, PyTorch + CUDA, NumPy, protobuf, TensorFlow, Hugging Face hub, setup tools, OpenVLA / LIBERO / ManiSkill / robosuite / media pipe / embodied / mujoco / gymnasium / PyTorch
+* Verifies critical compatibility pins and library versions before continuing.
+* Configures environment variables, dataset paths, and asset paths for the robot stack.
+* Creates the LIBERO benchmark environment and task setup, including BDDL files and dataset configuration.
+* Validates the GPU/device environment and confirms the stack is ready for rendering or simulation.
+
