@@ -1,7 +1,9 @@
 # panda_pick_rl
 
-This project uses StableBaselines Reinforcement Learning (RL) algorithms for fine tuning the MuJoCo models for
-tasks like pick and place.
+This project uses StableBaselines Reinforcement Learning (RL) algorithms for fine tuning a model to predict actions
+for Pick-and-Place tasks of robot arms in MuJoCo simulation.
+
+Fine-tuned OpenVLA with reinforcement learning (Stable-Baselines3 Proximal Policy Optimization) and evaluated a Panda arm’s success rate on pick-and-place tasks.
 
 MuJoCo is an open source advanced physics simulation frame work from Google Deepmind and 
 you can learn about it in https://mujoco.org/
@@ -15,7 +17,7 @@ reference environments. You can learn more at https://gymnasium.farama.org/index
 
 1. Setup the environment (install the required libraries and dependencies), run
 
-conda env create -f panda_pick_env.yml
+conda env create -f env_panda.yml
 
 Note the environment is setup for Macbook with Intel processor!
 
@@ -41,17 +43,13 @@ register(id="PandaGymnasium", entry_point="envs.panda_env:PandaEnv")
 The id is an identifier for the Panda Environment.
 Entry Point defines the required class PandaEnv in the required file envs/panda_env.py 
 
-envs/panda_env.py: Implements the Panda manipulation tasks with Gymanisum interface.
+envs/reach_panda.py: Implements the Panda manipulation tasks with Gymanisum interface.
 
 5. Use RL for fine tuning the models
 
-python fine_tune.py --timesteps 20000
-
-This imports the envs so Panda can be manipulated through Gymanisum interface
+python train_panda.py --timesteps 20000
 
 6. Evalure the fine tuned model
 
-mjpython evaluate.py --model-path models/panda_reach_final.zip --render --n-episodes 10
-
-This imports the envs so Panda can be manipulated through Gymanisum interface
+mjpython evaluate_panda.py --model-path models/panda_reach_final.zip --render --n-episodes 10
 
