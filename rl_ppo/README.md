@@ -51,5 +51,5 @@ python train_panda.py --timesteps 20000
 
 6. Evalure the fine tuned model
 
-mjpython evaluate_panda.py --model-path models/panda_reach_final.zip --render --n-episodes 10
+mjpython evaluate_panda.py --model-path models/finetuned_panda_ppo.zip --render --episodes 100
 
