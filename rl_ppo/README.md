@@ -34,7 +34,9 @@ whether it is configured for position control or not!
 
 python scripts/find_panda_actuator_config_type.py
 
-4. Set up the Gymnaisum environment for the agent to manipulate panda
+4. Set up the Gymnaisum environment for the agent to manipulate panda.
+You don't need to do this step explicitly.
+Both train_panda.py and evaluate_panda.py scripts do this implicitly.
 
 envs/__init__.py: This script registers the PandaEnv with Gymanisum.
 
